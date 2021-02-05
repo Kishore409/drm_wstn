@@ -209,6 +209,11 @@ enum wdrm_plane_property {
 	WDRM_PLANE_IN_FORMATS,
 	WDRM_PLANE_IN_FENCE_FD,
 	WDRM_PLANE_FB_DAMAGE_CLIPS,
+	WDRM_PLANE_DEGAMMA_LUT,
+	WDRM_PLANE_DEGAMMA_LUT_SIZE,
+	WDRM_PLANE_GAMMA_LUT,
+	WDRM_PLANE_GAMMA_LUT_SIZE,
+	WDRM_PLANE_CTM,
 	WDRM_PLANE__COUNT
 };
 
@@ -253,6 +258,11 @@ static const struct drm_property_info plane_props[] = {
 	[WDRM_PLANE_IN_FORMATS] = { .name = "IN_FORMATS" },
 	[WDRM_PLANE_IN_FENCE_FD] = { .name = "IN_FENCE_FD" },
 	[WDRM_PLANE_FB_DAMAGE_CLIPS] = { .name = "FB_DAMAGE_CLIPS" },
+	[WDRM_PLANE_DEGAMMA_LUT] = { .name = "PLANE_DEGAMMA_LUT" },
+	[WDRM_PLANE_DEGAMMA_LUT_SIZE] = { .name = "PLANE_DEGAMMA_LUT_SIZE" },
+	[WDRM_PLANE_GAMMA_LUT] = { .name = "PLANE_GAMMA_LUT" },
+	[WDRM_PLANE_GAMMA_LUT_SIZE] = { .name = "PLANE_GAMMA_LUT_SIZE" },
+	[WDRM_PLANE_CTM] = { .name = "PLANE_CTM" },
 };
 
 /**
@@ -540,6 +550,15 @@ struct drm_plane_state {
 	struct wl_list link; /* drm_output_state::plane_list */
 };
 
+struct drm_plane_color_prop {
+	uint32_t degamma_blob_id
+	uint64_t degamma_blob_size;
+	uint32_t gamma_blob_id
+	uint64_t gamma_blob_size;
+	uint32_t ctm_blob_id
+	uint64_t ctm_blob_size;
+};
+
 /**
  * A plane represents one buffer, positioned within a CRTC, and stacked
  * relative to other planes on the same CRTC.
@@ -578,6 +597,8 @@ struct drm_plane {
 		uint32_t count_modifiers;
 		uint64_t *modifiers;
 	} formats[];
+
+	struct drm_plane_color_prop color_prop;
 };
 
 /* CTA-861-G: HDR Metadata names and types */
@@ -4883,6 +4904,15 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 			drm_property_get_value(&plane->props[WDRM_PLANE_TYPE],
 					       props,
 					       WDRM_PLANE_TYPE__COUNT);
+		plane->color_prop.degamma_blob_size =
+			drm_property_get_value(&plane->props[WDRM_PLANE_DEGAMMA_LUT_SIZE],
+					       props, 0);
+		plane->color_prop.gamma_blob_size =
+			drm_property_get_value(&plane->props[WDRM_PLANE_GAMMA_LUT_SIZE],
+					       props, 0);
+		plane->color_prop.ctm_blob_size =
+			drm_property_get_value(&plane->props[WDRM_PLANE_CTM],
+					       props, 0);
 
 		if (drm_plane_populate_formats(plane, kplane, props) < 0) {
 			drmModeFreeObjectProperties(props);
