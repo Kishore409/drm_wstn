@@ -626,12 +626,14 @@ struct drm_hdr_metadata_static {
 	uint16_t max_fall;
 };
 
+#if 0
 struct hdr_output_metadata {
 	uint32_t metadata_type;
 	union {
 		struct drm_hdr_metadata_static static_md;
 	};
 };
+#endif
 
 /* Connector's color correction status */
 struct drm_conn_color_state {
@@ -4151,7 +4153,7 @@ drm_head_prepare_hdr_metadata_blob(struct drm_backend *b,
 					hdr_surf->hdr_metadata,
 					&target->o_md);
 
-	memcpy(&output_metadata.static_md, &target->o_md, sizeof (target->o_md));
+	memcpy(&output_metadata.hdmi_metadata_type1, &target->o_md, sizeof (target->o_md));
 
 	/* create blob to be set during next commit */
 	ret = drmModeCreatePropertyBlob(b->drm.fd,
