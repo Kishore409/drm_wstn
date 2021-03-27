@@ -49,10 +49,10 @@ struct colorspace {
         struct chromaticity blue;
 };
 
-/*void generatecsc_srctodest(enum drm_colorspace src, enum drm_colorspace dest, double result[3][3]);
+void generatecsc_srctodest(enum drm_colorspace src, enum drm_colorspace dest, double result[3][3]);
 void generateoetf2084lut(struct drm_color_lut_ext *lut, int lut_size, uint16_t max_val);
 void generateeotf2084lut(struct drm_color_lut_ext *lut, int lut_size, uint16_t max_val);
 void generatesrgbdegammalut(struct drm_color_lut_ext *lut, int lut_size, uint16_t max_val);
 void generatesrgbgammalut(struct drm_color_lut_ext *lut, int lut_size, uint16_t max_val);
-*/
+
 #endif /* WESTON_DRM_CTM_H */

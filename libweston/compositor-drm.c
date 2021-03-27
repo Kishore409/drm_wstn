@@ -541,6 +541,10 @@ struct drm_plane_state {
 	int32_t dest_x, dest_y;
 	uint32_t dest_w, dest_h;
 
+	uint32_t degamma_blob_id;
+	uint32_t ctm_blob_id;
+	uint32_t gamma_blob_id;
+	
 	bool complete;
 
 	/* We don't own the fd, so we shouldn't close it */
@@ -551,14 +555,6 @@ struct drm_plane_state {
 	struct wl_list link; /* drm_output_state::plane_list */
 };
 
-struct drm_plane_color_prop {
-	uint32_t degamma_blob_id;
-	uint64_t degamma_blob_size;
-	uint32_t gamma_blob_id;
-	uint64_t gamma_blob_size;
-	uint32_t ctm_blob_id;
-	uint64_t ctm_blob_size;
-};
 
 /**
  * A plane represents one buffer, positioned within a CRTC, and stacked
@@ -586,12 +582,14 @@ struct drm_plane {
 	uint32_t plane_id;
 	uint32_t count_formats;
 
+	uint64_t degamma_blob_size;
+	uint64_t ctm_blob_size;
+	uint64_t gamma_blob_size;
+	
 	struct drm_property_info props[WDRM_PLANE__COUNT];
 
 	/* The last state submitted to the kernel for this plane. */
 	struct drm_plane_state *state_cur;
-	struct drm_plane_color_prop color_prop;
-
 	struct wl_list link;
 
 	struct {
@@ -638,9 +636,10 @@ struct hdr_output_metadata {
 /* Connector's color correction status */
 struct drm_conn_color_state {
 	bool changed;
-	uint8_t o_cs;
+	//uint8_t o_cs;
 	uint8_t o_eotf;
 	uint32_t hdr_md_blob_id;
+        enum drm_colorspace output_cs;
 	struct drm_hdr_metadata_static o_md;
 };
 
@@ -2156,6 +2155,149 @@ drm_output_assign_state(struct drm_output_state *state,
 	}
 }
 
+static int
+drm_mode_create_property_blob(struct drm_backend *b,
+                void *blob_data, size_t blob_len, uint32_t *blob_id)
+{
+        int ret;
+
+        if (*blob_id) {
+                ret = drmModeDestroyPropertyBlob(b->drm.fd, *blob_id);
+                if (ret) {
+                        weston_log("Failed to destroy old blob %u\n", *blob_id);
+                        return ret;
+                }
+        }
+
+        return drmModeCreatePropertyBlob(b->drm.fd,
+                                                        blob_data,
+                                                        blob_len,
+                                                        blob_id);
+}
+
+static int drm_setup_plane_degamma(struct drm_backend *b, struct drm_plane_state *ps)
+{
+	int ret = 0;
+	struct drm_color_lut_ext *deg_lut;
+	bool is_content_hdr = !!ps->ev->surface->hdr_metadata;
+	uint64_t deg_lut_size = ps->plane->degamma_blob_size; 
+
+	deg_lut = malloc(deg_lut_size * sizeof(struct drm_color_lut_ext));
+	if (!deg_lut) {
+                weston_log("\t\t deg_lut malloc failed\n");
+                return ret;
+        }
+	
+	if (is_content_hdr)
+                generateeotf2084lut(deg_lut, deg_lut_size, 0xffff);
+        else
+                generatesrgbdegammalut(deg_lut, deg_lut_size, 0xffff);
+
+        ret = drm_mode_create_property_blob(b, (uint8_t *)deg_lut,
+                                                deg_lut_size * sizeof(struct drm_color_lut_ext),
+                                                &ps->degamma_blob_id);
+        if (ret) {
+                weston_log("Failed to create plane degamm blob\n");
+                ps->degamma_blob_id = -1;
+        }
+        return ret;
+}
+
+static int drm_setup_plane_ctm(struct drm_backend *b, struct drm_plane_state *ps, enum drm_colorspace target_cs)
+{
+	int ret = 0;
+        struct weston_surface *surf = ps->ev->surface;
+        enum drm_colorspace content_cs = surf->colorspace;
+	double csc_lut[3][3];
+
+	generatecsc_srctodest(content_cs, target_cs, csc_lut);
+        ret = drm_mode_create_property_blob(b, (uint8_t *)csc_lut,
+                                                sizeof(csc_lut),
+                                                &ps->ctm_blob_id);
+        if (ret) {
+                weston_log("Failed to create plane ctm blob\n");
+                ps->ctm_blob_id = -1;
+        }
+        return ret;
+}
+
+static int drm_setup_plane_gamma(struct drm_backend *b, struct drm_head *head, struct drm_plane_state *ps)
+{
+	int ret = 0;
+	struct drm_color_lut_ext *gamma_lut;
+	struct drm_edid_hdr_metadata_static *target_md = head->hdr_md;
+	uint64_t gamma_lut_size = ps->plane->gamma_blob_size; 
+	
+
+	gamma_lut = malloc(gamma_lut_size * sizeof(struct drm_color_lut_ext));
+	if (!gamma_lut) {
+                weston_log("\t\t gamma_lut malloc failed\n");
+                return ret;
+        }
+	
+	if (target_md)
+                generateoetf2084lut(gamma_lut, gamma_lut_size, 0xffff);
+        else
+                generatesrgbgammalut(gamma_lut, gamma_lut_size, 0xffff);
+
+        ret = drm_mode_create_property_blob(b, (uint8_t *)gamma_lut,
+                                                gamma_lut_size * sizeof(struct drm_color_lut_ext),
+                                                &ps->gamma_blob_id);
+        if (ret) {
+                weston_log("Failed to create plane gamma blob\n");
+                ps->gamma_blob_id = -1;
+        }
+        return ret;
+}
+
+static int drm_prepare_plane_csc(struct drm_backend *b, struct drm_head *head, struct drm_plane_state *ps, struct drm_conn_color_state *hdr_state)
+{
+	struct drm_plane *plane = ps->plane;
+	struct weston_surface *surf;
+	enum drm_colorspace target = hdr_state->output_cs;
+	int ret = 0;
+
+	if (!plane || plane->type == WDRM_PLANE_TYPE_CURSOR)
+		return ret;
+	
+	surf = ps->ev->surface;
+	if (!surf)
+		return ret;
+
+	 if (surf->colorspace <= DRM_COLORSPACE_INVALID ||
+                surf->colorspace >= DRM_COLORSPACE_MAX)
+                surf->colorspace = DRM_COLORSPACE_REC709;
+
+        if (surf->colorspace != hdr_state->output_cs) {
+		if (ps->plane->degamma_blob_size) {
+			ret = drm_setup_plane_degamma(b, ps);
+			if (ret) {
+				drm_debug(b, "\t\t[state] Failed to apply plane degamma\n");
+				return ret;
+			}
+		}
+
+		if (ps->plane->ctm_blob_size) {
+			ret = drm_setup_plane_ctm(b, ps, target);
+			if (ret) {
+				drm_debug(b, "\t\t[state] Failed to apply plane csc\n");
+				return ret;
+			}
+		}
+		
+		if (ps->plane->gamma_blob_size) {
+			ret = drm_setup_plane_gamma(b, head, ps);
+			if (ret) {
+				drm_debug(b, "\t\t[state] Failed to apply plane gamma\n");
+				return ret;
+			}
+		}
+		
+	}
+	return ret;
+}
+
+
 static struct drm_plane_state *
 drm_output_prepare_scanout_view(struct drm_output_state *output_state,
 				struct weston_view *ev,
@@ -2167,6 +2309,9 @@ drm_output_prepare_scanout_view(struct drm_output_state *output_state,
 	struct drm_plane_state *state;
 	struct drm_fb *fb;
 	pixman_box32_t *extents;
+	struct weston_head *w_head = weston_output_get_first_head(&output->base);
+	struct drm_head *head = to_drm_head(w_head);
+	struct drm_conn_color_state *hdr_state = &head->color_state;
 
 	assert(!b->sprites_are_broken);
 	assert(mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY);
@@ -2227,6 +2372,10 @@ drm_output_prepare_scanout_view(struct drm_output_state *output_state,
 		goto err;
 
 	state->in_fence_fd = ev->surface->acquire_fence_fd;
+
+
+	if ( !(drm_prepare_plane_csc(b, head, state, hdr_state)))
+		drm_debug(b, "\t\t\t\t[state] drm_prepare_plane_csc Failed\n");
 
 	/* In plane-only mode, we don't need to test the state now, as we
 	 * will only test it once at the end. */
@@ -2759,7 +2908,7 @@ connector_add_color_correction(drmModeAtomicReq *req,
 
 	*flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
 
-	kernel_cs = to_kernel_colorspace(conn_state->o_cs);
+	kernel_cs = to_kernel_colorspace(conn_state->output_cs);
 	ret = connector_add_prop(req,
 				 head,
 				 WDRM_CONNECTOR_OUTPUT_COLORSPACE,
@@ -4238,7 +4387,7 @@ found_cs:
 
 	/* TODO: Setup output gamma here */
 	target->o_eotf = target_eotf;
-	target->o_cs = target_cs;
+	target->output_cs = target_cs;
 	target->changed = true;
 	target->hdr_md_blob_id = blob_id;
 	return 0;
@@ -4898,13 +5047,13 @@ drm_plane_create(struct drm_backend *b, const drmModePlane *kplane,
 			drm_property_get_value(&plane->props[WDRM_PLANE_TYPE],
 					       props,
 					       WDRM_PLANE_TYPE__COUNT);
-		plane->color_prop.degamma_blob_size =
+		plane->degamma_blob_size =
 			drm_property_get_value(&plane->props[WDRM_PLANE_DEGAMMA_LUT_SIZE],
 					       props, 0);
-		plane->color_prop.gamma_blob_size =
+		plane->gamma_blob_size =
 			drm_property_get_value(&plane->props[WDRM_PLANE_GAMMA_LUT_SIZE],
 					       props, 0);
-		plane->color_prop.ctm_blob_size =
+		plane->ctm_blob_size =
 			drm_property_get_value(&plane->props[WDRM_PLANE_CTM],
 					       props, 0);
 
