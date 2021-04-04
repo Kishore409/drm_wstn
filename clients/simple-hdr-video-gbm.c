@@ -527,8 +527,10 @@ fill_buffer(struct buffer *buffer, AVFrame *frame) {
 	int i;
 	void *map_data = NULL;
 	uint32_t dst_stride;
+	uint32_t w = gbm_bo_get_width(buffer->bo);
+	uint32_t h = gbm_bo_get_height(buffer->bo);
 
-	buffer->mmap = gbm_bo_map(buffer->bo, 0, 0, buffer->width, buffer->height,
+	buffer->mmap = gbm_bo_map(buffer->bo, 0, 0, w, h,
 				  GBM_BO_TRANSFER_WRITE, &dst_stride, &map_data);
 	if (!buffer->mmap) {
 		fprintf(stderr, "Unable to mmap buffer\n");
